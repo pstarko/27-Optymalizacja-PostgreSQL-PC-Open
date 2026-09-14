@@ -1,0 +1,57 @@
+explain
+select * from orders
+where
+	status = 'completed'
+	or shipping_region = 1
+	
+	
+	  Filter: ((status = 'completed'::text) OR (shipping_region = 'North America'::text))
+	  
+explain	  
+select * from orders
+where
+	status in ('shipped', 'completed')
+	
+	
+	  Filter: (status = ANY ('{shipped,completed}'::text[]))
+	  
+	  
+--Limit  (cost=7568269.76..7568269.83 rows=25 width=44) (actual time=16259.285..16259.292 rows=25.00 loops=1)	  
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+    o.order_id,
+    o.order_date,
+    (
+        SELECT SUM(oi.quantity * oi.unit_price)
+        FROM order_items oi
+        WHERE oi.order_id = o.order_id
+    ) AS total_amount
+FROM orders o
+WHERE o.customer_id BETWEEN 1000 AND 1100
+  AND o.order_date >= CURRENT_DATE - INTERVAL '180 days'
+ORDER BY total_amount DESC
+LIMIT 25;
+
+--Limit  (cost=26171.22..26171.28 rows=25 width=44) (actual time=102.639..105.347 rows=25.00 loops=1)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+    o.order_id,
+    o.order_date,
+    SUM(oi.quantity * oi.unit_price) AS total_amount
+FROM orders o
+JOIN order_items oi
+    ON oi.order_id = o.order_id
+WHERE o.customer_id BETWEEN 1000 AND 1100
+  AND o.order_date >= CURRENT_DATE - INTERVAL '180 days'
+GROUP BY
+    o.order_id,
+    o.order_date
+ORDER BY total_amount DESC
+LIMIT 25;
+
+
+
+
+
+
+
