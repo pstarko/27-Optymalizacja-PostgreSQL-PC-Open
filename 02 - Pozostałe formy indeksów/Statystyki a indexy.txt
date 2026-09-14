@@ -1,0 +1,84 @@
+--Wpływ statystyk na zapytania
+
+DROP TABLE IF EXISTS planner_stats_demo;
+
+CREATE TABLE planner_stats_demo (
+    order_id    BIGSERIAL PRIMARY KEY,
+    status      TEXT NOT NULL,
+    order_date  DATE NOT NULL,
+    total_amount NUMERIC(10,2) NOT NULL
+);
+
+SELECT setseed(0.42);
+
+
+INSERT INTO planner_stats_demo (
+    status,
+    order_date,
+    total_amount
+)
+    SELECT
+        CASE
+            WHEN random() < 0.95 THEN 'completed'
+            ELSE 'cancelled'
+        END,
+        CURRENT_DATE - floor(random() * 365)::int,
+        round((25 + random() * 975)::numeric, 2)
+    FROM generate_series(1, 300000);
+
+
+select * from planner_stats_demo
+
+CREATE INDEX idx_planner_stats_demo_status
+ON planner_stats_demo (status);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+    COUNT(*)
+FROM planner_stats_demo
+WHERE status = 'cancelled';
+
+Aggregate  (cost=359.62..359.63 rows=1 width=8) (actual time=1.914..1.914 rows=1.00 loops=1)
+  Buffers: shared hit=1 read=15
+  ->  Index Only Scan using idx_planner_stats_demo_status on planner_stats_demo  (cost=0.42..321.72 rows=15160 width=0) (actual time=0.068..1.091 rows=15160.00 loops=1)
+        Index Cond: (status = 'cancelled'::text)
+        Heap Fetches: 0
+        Index Searches: 1
+        Buffers: shared hit=1 read=15
+        
+        
+UPDATE planner_stats_demo
+SET status = 'cancelled'
+WHERE order_id <= 210000;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+    COUNT(*)
+FROM planner_stats_demo
+WHERE status = 'cancelled';
+
+Aggregate  (cost=1776.15..1776.16 rows=1 width=8) (actual time=71.358..71.359 rows=1.00 loops=1)
+  Buffers: shared hit=3272 dirtied=127
+  ->  Index Only Scan using idx_planner_stats_demo_status on planner_stats_demo  (cost=0.42..1711.72 rows=25771 width=0) (actual time=22.300..60.086 rows=214516.00 loops=1)
+        Index Cond: (status = 'cancelled'::text)
+        Heap Fetches: 220659
+        Index Searches: 1
+        Buffers: shared hit=3272 dirtied=127
+
+ANALYZE planner_stats_demo;
+
+reindex index idx_planner_stats_demo_status
+
+
+
+
+
+
+
+
+
+
+
+
+
+
