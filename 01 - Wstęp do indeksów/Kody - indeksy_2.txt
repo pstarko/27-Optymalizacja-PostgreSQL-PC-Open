@@ -1,0 +1,129 @@
+--rozmiar bez indeksów
+SELECT pg_size_pretty(pg_relation_size('AllData')) AS tabela_size;
+
+--rozmiar indeksów w tabeli
+--0 kB
+SELECT pg_size_pretty(pg_indexes_size('AllData')) AS indexy_size;
+
+
+--Całkowity rozmiar tabeli wraz z indeksami (i TOAST, jeśli istnieje)
+--4248 kB
+SELECT pg_size_pretty(pg_total_relation_size('AllData')) AS calkowity_rozmiar;
+
+
+--Sprawdzenie czy tabela korzysta z TOAST
+SELECT reltoastrelid::regclass AS toast_table
+FROM pg_class
+WHERE oid = 'AllData'::regclass;
+
+select * from pg_toast.pg_toast_32822
+
+--Sprawdzenie kolumn podatnych na TOAST
+SELECT attname, format_type(atttypid, atttypmod) AS typ
+FROM pg_attribute
+WHERE attrelid = 'AllData'::regclass
+  AND atttypid IN (
+    SELECT oid FROM pg_type WHERE typname IN ('text', 'bytea', 'jsonb', 'varchar', 'aclitem', 'xml')
+  )
+  AND attnum > 0
+  AND NOT attisdropped;
+
+
+
+--wszystkie odczyty będą miały identyczną ilość odczytów (tabela sterta)
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM AllData WHERE FirstName = 'Eric'
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM AllData WHERE ID = 1667
+--  Buffers: shared hit=526
+
+/*
+	INDEX	
+*/
+
+CREATE INDEX IDX_AllData_ID ON AllData (ID)
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM AllData WHERE FirstName = 'Eric'
+
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM AllData WHERE ID = 1667
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM AllData ORDER BY ID
+
+--Defragmentacja indeksu
+create table alldata2
+as
+select * from alldata
+
+create index idx_alldata2_id on alldata2(id)
+
+--alldata2	432 kB - 840 kB
+SELECT 
+  relname AS indeks,
+  pg_size_pretty(pg_relation_size(indexrelid)) AS rozmiar_indeksu
+FROM pg_stat_user_indexes
+WHERE relname = 'alldata2';
+
+update alldata2 set lastname = concat(lastname, 'x');
+
+SELECT pg_size_pretty(pg_relation_size('AllData2')) AS tabela_size;
+
+REINDEX INDEX idx_alldata2_id;
+
+vacuum full alldata2
+
+
+SELECT 
+	schemaname AS "Schemat",
+    relname AS tabela, 
+    n_live_tup AS zywe_wiersze, 
+    n_dead_tup AS martwe_wiersze,
+    n_dead_tup::float / CASE WHEN n_live_tup = 0 THEN 1 ELSE n_live_tup END * 100 AS procent_martwych,
+    last_vacuum, 
+    last_autovacuum
+FROM pg_stat_user_tables
+
+--HEAP vs INDEX (DML)
+
+SELECT * INTO AllData_heap
+FROM AllData WHERE 1=2
+
+SELECT * INTO AllData_ci
+FROM AllData WHERE 1=2
+
+CREATE INDEX IDX_AllData_ci_ID ON AllData_ci (ID)
+
+
+EXPLAIN (ANALYZE, BUFFERS)
+INSERT INTO AllData_heap
+SELECT * FROM AllData
+
+			  Buffers: shared hit=20320 dirtied=512 written=514
+			  ->  Seq Scan on alldata  (cost=0.00..713.74 rows=18774 width=179) (actual time=0.015..2.248 rows=18774.00 loops=1)
+			        Buffers: shared hit=526
+			Planning:
+			  Buffers: shared hit=2
+			Planning Time: 0.112 ms
+			Execution Time: 20.295 ms
+
+EXPLAIN (ANALYZE, BUFFERS)
+INSERT INTO AllData_ci
+SELECT * FROM AllData
+
+	
+	Insert on alldata_ci  (cost=0.00..713.74 rows=0 width=0) (actual time=51.351..51.352 rows=0.00 loops=1)
+	  Buffers: shared hit=57528 read=1 dirtied=566 written=567
+	  ->  Seq Scan on alldata  (cost=0.00..713.74 rows=18774 width=179) (actual time=0.025..2.605 rows=18774.00 loops=1)
+	        Buffers: shared hit=526
+	Planning Time: 0.138 ms
+	Execution Time: 51.386 ms
+
+
+SELECT query, calls, rows, shared_blks_hit, shared_blks_read
+  FROM pg_stat_statements
+ WHERE query LIKE '%INSERT%';
+
