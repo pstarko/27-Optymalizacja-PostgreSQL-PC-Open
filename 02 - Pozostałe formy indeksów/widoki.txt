@@ -1,0 +1,49 @@
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT 
+    o.order_id, o.order_date, o.status
+FROM orders o 
+WHERE o.status = 'completed' 
+
+
+
+create view v_orders
+as
+SELECT 
+    o.order_id, o.order_date, o.status
+FROM orders o 
+WHERE o.status = 'completed' 
+
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT 
+    o.order_id, o.order_date, o.status
+FROM v_orders o
+
+--Seq Scan on orders o  (cost=0.00..11294.00 rows=358333 width=21) (actual time=0.399..84.266 rows=360258.00 loops=1)
+
+create materialized view vm_orders
+as
+SELECT 
+    o.order_id, o.order_date, o.status
+FROM orders o 
+WHERE o.status = 'completed' 
+
+
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT 
+    o.order_id, o.order_date, o.status
+FROM vm_orders o
+where o.order_id=100
+
+
+--Seq Scan on vm_orders o  (cost=0.00..5011.89 rows=265889 width=44) (actual time=0.441..34.385 rows=360258.00 loops=1)
+
+create index idx_vm_orders on vm_orders(order_id)
+
+
+
+
+
+
+
