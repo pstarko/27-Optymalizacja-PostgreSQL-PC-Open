@@ -1,0 +1,182 @@
+explain analyze
+select * from alldata
+
+EXPLAIN (ANALYZE, BUFFERS)
+select * from alldata
+/*
+--COST: 698.74
+shared hit= 511 — 511 stron odczytanych z bufora (pamięci)
+read=1 — 1 strona odczytana z dysku
+
+Jeśli w sekcji Buffers widzisz wyłącznie wartości shared hit 
+(np. Buffers: shared hit=511) i nie pojawia się read, 
+oznacza to, że wszystkie potrzebne strony były już załadowane 
+w pamięci RAM serwera PostgreSQL (w buforze współdzielonym) 
+i żadna nie musiała być pobrana z dysku podczas wykonywania 
+zapytania
+
+Brak wartości read to zjawisko pozytywne i świadczy o dobrej wydajności: 
+PostgreSQL mógł zrealizować całe zapytanie, korzystając tylko 
+z danych już znajdujących się w pamięci, 
+omijając wolniejsze operacje dyskowe
+
+Warto pamiętać, że licznik shared hit sumuje wszystkie odczyty 
+stron z bufora, nawet jeśli ta sama strona była 
+czytana wielokrotnie (szczególnie przy Nested Loop), 
+więc nie zawsze odzwierciedla ilość unikalnych stron, 
+a raczej łączną liczbę dostępu do pamięci cache
+*/
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM AllData 
+order by ModifiedDate
+--COST: 20078.30
+/*
+shared hit=511 — liczba stron (bloków) z pamięci podręcznej shared_buffers (bufor współdzielony do normalnych tabel i indeksów), 
+które zostały odczytane bez potrzeby odczytu z dysku.
+
+temp read=456 — liczba stron tymczasowych plików, które zostały odczytane z dysku. 
+Te pliki tymczasowe powstają podczas operacji wymagających zapisu poza pamięcią (np. sortowanie lub haszowanie, 
+gdy wynik jest zbyt duży na pamięć).
+
+temp written=457 — liczba stron tymczasowych plików zapisana na dysk podczas takich operacji tymczasowych 
+(np. zapisywanie wyników sortowania czy materiału pośredniego na dysk).
+
+Są to odczyty i zapisy w plikach tymczasowych na dysku, 
+które PostgreSQL tworzy w trakcie np. sortowania, grupowania 
+czy haszowania, gdy pamieć operacyjna (work_mem) 
+jest niewystarczająca. Wartości temp read i written oznaczają 
+koszty operacji dyskowych, które mogą spowalniać zapytanie i 
+są dobrym wskaźnikiem potrzeby optymalizacji zapytań 
+albo zwiększenia memory settings (np. work_mem).
+ */
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT distinct city FROM AllData 
+--Memory Usage: 45kB
+
+/*
+Batches: 1 — liczba wsadów (partii), w których przetwarzane są 
+dane, np. podczas operacji haszowania (Hash Join, Hash Aggregate). 
+Jeden wsad oznacza, że cały zbiór danych jest przetwarzany w całości, 
+bez dzielenia na mniejsze partie. 
+Jeśli wsadów jest więcej, oznacza to, że PostgreSQL dzieli dane na partie, 
+aby zmniejszyć zużycie pamięci podczas operacji hash, co może powodować większe koszty I/O (temporyczne zapisy na dysk).
+
+Memory Usage: 45kB — ilość pamięci RAM (w bajtach lub kilobajtach)
+wykorzystanej do tej operacji, np. na tablicę haszową. 
+Ta informacja pomaga ocenić, czy operacja mieściła się w pamięci 
+i jak efektywnie używa pamięci.
+
+W skrócie: w tym przypadku operacja (np. Hash Join) wykonała się 
+w jednym wsadzie, zużywając około 45 kB pamięci, 
+co zwykle oznacza dość mały i efektywnie przetwarzany zestaw 
+danych bez konieczności dzielenia na partie czy zapisywania 
+tymczasowego na dysk
+ */
+
+
+---------------
+
+--Deoptymalizacja przez użycie funkcji zamiast bezpośredniego kodu
+
+--tworzymy funkcję
+CREATE OR REPLACE FUNCTION par_fun(val int)
+RETURNS numeric AS $$
+DECLARE
+    result numeric;
+BEGIN
+    SELECT SUM(unitPrice) INTO result
+    FROM SalesOrderDetail
+    WHERE SalesOrderDetailID = val;
+    
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+
+--COST: 9385, Time: 27.468
+EXPLAIN (ANALYZE, BUFFERS)
+select 
+	SalesOrderDetailID,
+	sum(unitPrice) over (partition by salesorderdetailid) as suma
+	from SalesOrderDetail
+	limit 1000
+	
+
+--COST 274, Time: 1087
+select 
+	SalesOrderDetailID,
+	par_fun(SalesOrderDetailID)
+	from SalesOrderDetail
+limit 1000
+
+/*
+Różnica między kosztem (cost) i rzeczywistym czasem wykonania (execution time) zapytań 
+w PostgreSQL wynika z tego, jak planner estymuje koszt, a jak faktycznie jest wykonane zapytanie.
+
+Wyjaśnienie różnicy w twoim przykładzie:
+Koszt (cost) to szacunkowa wartość, oparta na statystykach tabel i modelu kosztów, 
+która odzwierciedla liczbę jednostek pracy (np. liczba odczytów stron dysku). 
+Jest to wartość arbitralna, służy plannerowi do wyboru planu, ale nie 
+jest dokładnym czasem wykonania.
+
+Execution time to rzeczywisty czas wykonania zapytania zmierzony po jego uruchomieniu.
+
+***Dlaczego zapytanie z funkcją ma niższy koszt, ale dłuższy czas wykonania?
+Funkcja par_fun(SalesOrderDetailID) może być czarną skrzynką dla planera — 
+czyli planner nie może dobrze oszacować jej kosztu, więc przypisuje jej niski koszt. 
+Jednak w rzeczywistości funkcja ta może być kosztowna obliczeniowo 
+(np. skomplikowana logika, petle, wolne operacje), stąd długi czas wykonania.
+
+W pierwszym zapytaniu jest funkcja agregująca okna sum(unitPrice) OVER (...), 
+która ma precyzyjnie wyliczony koszt na podstawie znanych operatorów w plannerze, 
+choć jej koszt jest większy, ale jest efektywnie wykonywana, 
+np. korzystając z wewnętrznych optymalizacji PostgreSQL, więc wykonuje się szybciej.
+
+Koszt nie uwzględnia wszystkich aspektów, np. kosztu CPU, kosztów funkcji 
+zdefiniowanych przez użytkownika czy wpływów pamięci podręcznej.
+
+***Co warto zrobić?
+	Sprawdź szczegóły funkcji par_fun pod kątem optymalności (czy nie robi nadmiarowych pętli, 
+	zapytań, obliczeń).
+
+	Zaktualizuj statystyki tabel poleceniem ANALYZE SalesOrderDetail.
+
+	Pamiętaj, aby przy porównywaniu planów nie kierować się tylko liczbowym kosztem — 
+	dużo ważniejszy jest rzeczywisty czas wykonania oraz profilowanie zapytania.
+
+	Podsumowując, niższy koszt w planie to nie zawsze szybsze wykonanie, 
+	zwłaszcza jeśli zapytanie lub funkcja jest złożona i planner nie potrafi dobrze 
+	oszacować rzeczywistego nakładu pracy
+*/
+
+-----------------------
+
+--szersze sprawdzenie funkcji
+CREATE EXTENSION pg_stat_statements;
+
+/*
+Kolumna						Co oznacza
+query						Tekst samego zapytania SQL
+calls						Ile razy to zapytanie zostało wykonane
+blk_read_time				Całkowity czas (w ms) spędzony na czytaniu bloków danych z dysku
+blk_write_time				Całkowity czas (w ms) spędzony na pisaniu bloków danych na dysk
+shared_blks_read			Liczba bloków przeczytanych fizycznie z dysku (najdroższe operacje)
+shared_blks_hit				Liczba bloków znalezionych w shared buffer cache (szybkie, z RAM) 
+ 
+ 
+Cache Hit Ratio (ważne):
+Możesz obliczyć efektywność:
+
+cache_hit_ratio = shared_blks_hit / (shared_blks_hit + shared_blks_read)
+              = 85000 / (85000 + 15000) 
+              = 85% 
+>90% = dobra efektywność cache
+<50% = funkcja zbyt dużo czyta z dysku, możesz optymalizować indeksy
+ */
+ 
+ 
+SELECT *
+FROM pg_stat_statements
+WHERE query LIKE '%par_fun%';
