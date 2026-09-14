@@ -1,0 +1,116 @@
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+    o.order_id,
+    o.order_date,
+    c.customer_name,
+    SUM(oi.quantity * oi.unit_price) AS total_amount
+FROM orders o
+JOIN customers c
+    ON c.customer_id = o.customer_id
+JOIN order_items oi
+    ON oi.order_id = o.order_id
+WHERE o.order_date >= CURRENT_DATE - INTERVAL '30 days'
+	and o.status = 'completed'
+GROUP BY
+    o.order_id,
+    o.order_date,
+    c.customer_name
+ORDER BY total_amount DESC
+LIMIT 25;
+
+select * from orders
+
+
+--Zwróć uwagę na Parallel Seq Scan
+/*
+Parallel Seq Scan on orders oznacza, że PostgreSQL wykonuje równoległe skanowanie sekwencyjne tabeli orders.
+
+Co się dzieje?
+	Seq Scan — PostgreSQL czyta kolejne strony tabeli od początku do końca, zamiast użyć indeksu.
+	Parallel — pracę dzieli pomiędzy kilka procesów roboczych (workers).
+Każdy worker przetwarza inną część tabeli, a proces główny scala wyniki.
+
+Kiedy jest to normalne?
+Parallel Seq Scan może być dobrym planem, gdy:
+
+	tabela jest duża,
+	filtr zwraca znaczną część wierszy,
+	indeksu nie ma albo indeks nie byłby opłacalny,
+	koszt odczytu tabeli jest wystarczający, by uruchomić równoległość.
+
+*/
+
+--index na filtrowanie danych
+CREATE INDEX idx_orders_order_date
+ON orders (order_date);
+
+ANALYZE orders;
+
+--indeks kompozytowy
+CREATE INDEX idx_orders_order_date_status
+ON orders (order_date, status);
+
+
+
+drop index idx_orders_status_order_date
+--indeks kompozytowy
+CREATE INDEX idx_orders_status_order_date
+ON orders (status, order_date);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+    o.order_id,
+    o.order_date,
+    c.customer_name,
+    SUM(oi.quantity * oi.unit_price) AS total_amount
+FROM orders o
+JOIN customers c
+    ON c.customer_id = o.customer_id
+JOIN order_items oi
+    ON oi.order_id = o.order_id
+WHERE o.status = 'completed'
+GROUP BY
+    o.order_id,
+    o.order_date,
+    c.customer_name
+ORDER BY total_amount DESC
+LIMIT 25;
+
+
+--partial
+
+CREATE INDEX idx_orders_recent_completed
+ON orders (order_date)
+WHERE status = 'completed';
+
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT
+    order_id,
+    customer_id,
+    order_date,
+    status
+FROM orders
+WHERE order_date >= CURRENT_DATE - INTERVAL '30 days'
+  AND status = 'completed'
+ORDER BY order_date DESC
+LIMIT 100;
+
+--COVER INDEX
+CREATE INDEX idx_orders_covering_recent_completed
+ON orders (order_date DESC, status)
+INCLUDE (order_id, customer_id);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
