@@ -1,0 +1,282 @@
+---Partycjonowanie tabel
+
+
+-- Krok 1 — Partycjonowanie RANGE (po dacie)
+
+-- Tabela nadrzędna
+		
+		drop table orders cascade;
+		
+		CREATE TABLE orders (
+			id          BIGSERIAL,
+			created_at  TIMESTAMPTZ NOT NULL,
+			customer_id INT,
+			amount      NUMERIC(10,2),
+			status      TEXT
+		) PARTITION BY RANGE (created_at);
+		
+		
+		-- Partycje roczne
+		CREATE TABLE orders_2023
+			PARTITION OF orders
+			FOR VALUES FROM ('2023-01-01') TO ('2024-01-01');
+
+		CREATE TABLE orders_2024
+			PARTITION OF orders
+			FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+
+		CREATE TABLE orders_2025
+			PARTITION OF orders
+			FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+
+		-- Partycja domyślna (dla wartości spoza zakresów)
+		CREATE TABLE orders_default
+			PARTITION OF orders DEFAULT;
+		
+		
+--inserty
+-- Dane z 2023
+INSERT INTO orders (created_at, customer_id, amount, status) VALUES
+  ('2023-03-15 10:30:00+00', 101, 250.00, 'completed'),
+  ('2023-07-22 14:15:00+00', 102, 1200.50, 'completed'),
+  ('2023-11-30 09:00:00+00', 103,   89.99, 'refunded');
+
+-- Dane z 2024
+INSERT INTO orders (created_at, customer_id, amount, status) VALUES
+  ('2024-01-05 08:00:00+00', 104,  499.00, 'completed'),
+  ('2024-06-18 16:45:00+00', 105, 3200.00, 'pending'),
+  ('2024-09-01 11:20:00+00', 101,  150.75, 'completed'),
+  ('2024-12-31 23:59:00+00', 106,  999.99, 'completed');
+
+-- Dane z 2025
+INSERT INTO orders (created_at, customer_id, amount, status) VALUES
+  ('2025-02-14 12:00:00+00', 107,  320.00, 'pending'),
+  ('2025-05-01 07:30:00+00', 102,   75.00, 'completed');
+
+-- Dane spoza zakresów → trafią do orders_default
+INSERT INTO orders (created_at, customer_id, amount, status) VALUES
+  ('2021-06-10 10:00:00+00', 199, 5000.00, 'archived'),
+  ('2026-01-01 00:00:00+00', 200,  100.00, 'pending');
+				
+--Zapytania pokazujące potencjał partycjonowania
+--1. Partition pruning — Postgres skanuje tylko orders_2024:		
+EXPLAIN ANALYZE
+SELECT * FROM orders
+WHERE created_at BETWEEN '2024-01-01' AND '2024-12-31';
+
+--2. Sprawdzenie, w której partycji fizycznie leżą dane:
+SELECT tableoid::regclass AS partition, id, created_at, amount, status
+FROM orders
+ORDER BY created_at;		
+		
+select * from orders
+
+select * from orders_2023
+
+--3. Agregacja per rok — każda partycja liczona osobno:
+EXPLAIN ANALYZE
+SELECT
+  DATE_TRUNC('year', created_at) AS year,
+  COUNT(*)                        AS orders_count,
+  SUM(amount)                     AS total_revenue,
+  AVG(amount)                     AS avg_order
+FROM orders
+GROUP BY 1
+ORDER BY 1;
+
+--4. Bezpośrednie zapytanie do konkretnej partycji:
+SELECT * FROM orders_2023 WHERE status = 'refunded';
+
+
+5. Usunięcie całego roku bez DELETE (błyskawiczne!):
+-- Zamiast: DELETE FROM orders WHERE created_at < '2024-01-01';
+DROP TABLE orders_2023;
+-- lub: ALTER TABLE orders DETACH PARTITION orders_2023;	
+
+--Kluczowe korzyści widoczne w przykładach
+/*
+Cecha					Opis
+Partition pruning		WHERE na created_at → Postgres pomija nieistotne partycje
+Szybkie usuwanie		DROP/DETACH partycji zamiast masowego DELETE
+Izolacja danych			Zapytanie bezpośrednio do orders_2023 bez skanowania reszty
+Partycja domyślna		Dane spoza zakresów nie giną — lądują w orders_default
+*/
+
+drop table orders;
+	
+---> Partycjonowanie LIST (po kategorii)
+
+		drop table products cascade;
+		
+		CREATE TABLE products (
+			id       BIGSERIAL,
+			name     TEXT,
+			category TEXT NOT NULL,
+			price    NUMERIC(10,2)
+		) PARTITION BY LIST (category);
+
+		CREATE TABLE products_electronics
+			PARTITION OF products
+			FOR VALUES IN ('electronics', 'computers', 'phones');
+
+		CREATE TABLE products_clothing
+			PARTITION OF products
+			FOR VALUES IN ('clothing', 'shoes', 'accessories');
+
+		CREATE TABLE products_other
+			PARTITION OF products DEFAULT;
+		
+-- Elektronika → products_electronics
+INSERT INTO products (name, category, price) VALUES
+  ('iPhone 15 Pro',        'phones',       4999.00),
+  ('MacBook Air M3',       'computers',    6499.00),
+  ('Samsung OLED 65"',     'electronics',  3200.00),
+  ('AirPods Pro',          'electronics',   999.00),
+  ('Lenovo ThinkPad X1',   'computers',    5800.00);
+
+-- Odzież → products_clothing
+INSERT INTO products (name, category, price) VALUES
+  ('Nike Air Max 90',      'shoes',         599.00),
+  ('Levi''s 501 Jeans',    'clothing',      299.00),
+  ('Leather Wallet',       'accessories',    89.00),
+  ('Adidas Hoodie',        'clothing',      249.00),
+  ('Ray-Ban Aviator',      'accessories',   450.00);
+
+-- Inne → products_other (DEFAULT)
+INSERT INTO products (name, category, price) VALUES
+  ('Yoga Mat',             'sports',         79.00),
+  ('Coffee Maker',         'kitchen',       349.00),
+  ('Harry Potter Box Set', 'books',         120.00);		
+			
+--1. Partition pruning — skanuje tylko products_electronics:
+
+EXPLAIN ANALYZE
+SELECT * FROM products
+WHERE category IN ('electronics', 'phones');	
+
+--2. Sprawdzenie, w której partycji leżą dane:
+
+SELECT tableoid::regclass AS partition, id, name, category, price
+FROM products
+ORDER BY partition, category;	
+
+--3. Statystyki per partycja (kategoria):
+
+SELECT
+  category,
+  COUNT(*)       AS products_count,
+  MIN(price)     AS min_price,
+  MAX(price)     AS max_price,
+  AVG(price)     AS avg_price
+FROM products
+GROUP BY category
+ORDER BY avg_price DESC;
+
+--4. Najdroższy produkt w każdej partycji:
+
+SELECT DISTINCT ON (tableoid::regclass)
+  tableoid::regclass AS partition,
+  name,
+  category,
+  price
+FROM products
+ORDER BY tableoid::regclass, price DESC;
+		
+	
+--Dodanie nowej kategorii do istniejącej partycji:
+
+-- nie działa
+ALTER TABLE products
+    ATTACH PARTITION products_electronics
+    FOR VALUES IN ('electronics', 'computers', 'phones', 'tablets');
+
+--ATTACH wymaga najpierw detach partycji:
+-- 1. Odepnij partycję
+ALTER TABLE products DETACH PARTITION products_electronics;
+
+-- 2. Przypnij ponownie z nową wartością
+ALTER TABLE products
+    ATTACH PARTITION products_electronics
+    FOR VALUES IN ('electronics', 'computers', 'phones', 'tablets');
+
+select * from products_electronics
+
+--W praktyce łatwiej po prostu stworzyć nową partycję dla nowej kategorii:
+
+CREATE TABLE products_tablets
+    PARTITION OF products
+    FOR VALUES IN ('tablets');
+
+drop table products cascade;	
+
+
+--Porównanie RANGE vs LIST
+/*
+Cecha				RANGE (orders)					LIST (products)
+Klucz podziału		Zakres ciągły (daty, liczby)	Dyskretne wartości (kategorie, statusy)
+Pruning				WHERE created_at > ...			WHERE category = ...
+Typowy use case		Dane czasowe, logi				Słowniki, enumy, regiony
+Partycja DEFAULT	Dane spoza zakresów				Nieznane/nowe kategorie		
+*/	
+
+
+--> Partycjonowanie HASH (równomierne rozłożenie)
+
+		CREATE TABLE events (
+			id      BIGSERIAL,
+			user_id INT NOT NULL,
+			payload JSONB
+		) PARTITION BY HASH (user_id);
+
+		-- 4 partycje — modulo 4
+		CREATE TABLE events_p0 PARTITION OF events FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+		CREATE TABLE events_p1 PARTITION OF events FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+		CREATE TABLE events_p2 PARTITION OF events FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+		CREATE TABLE events_p3 PARTITION OF events FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+		
+--> Indeksy na partycjach
+
+		-- Indeks na tabeli nadrzędnej → automatycznie tworzony na wszystkich partycjach
+		CREATE INDEX ON events (id);
+		CREATE INDEX ON events (user_id);
+
+		-- Lub indeks tylko na konkretnej partycji
+		CREATE INDEX ON events_p0 (id);
+		
+--> Wstawianie i sprawdzanie danych
+
+		-- Wstaw dane testowe
+		INSERT INTO events (user_id, payload)
+		SELECT
+		    (random() * 99999 + 1)::INT AS user_id,
+		    jsonb_build_object(
+		        'event_type', (ARRAY['click', 'view', 'purchase', 'login', 'logout'])[floor(random() * 5 + 1)::INT],
+		        'timestamp',  now() - (random() * interval '365 days'),
+		        'session_id', md5(random()::TEXT),
+		        'metadata', jsonb_build_object(
+		            'ip',      concat(
+		                           (random()*255)::INT, '.',
+		                           (random()*255)::INT, '.',
+		                           (random()*255)::INT, '.',
+		                           (random()*255)::INT
+		                       ),
+		            'browser', (ARRAY['Chrome', 'Firefox', 'Safari', 'Edge'])[floor(random() * 4 + 1)::INT],
+		            'os',      (ARRAY['Windows', 'macOS', 'Linux', 'Android', 'iOS'])[floor(random() * 5 + 1)::INT]
+		        )
+		    ) AS payload
+		FROM generate_series(1, 100000);
+
+		-- Sprawdź rozkład danych po partycjach
+		SELECT
+			tableoid::regclass AS partycja,
+			COUNT(*) AS liczba_wierszy
+		FROM events
+		GROUP BY tableoid;	
+		
+		drop table events;
+
+
+
+
+
+
