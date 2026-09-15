@@ -1,0 +1,52 @@
+CREATE TABLE sprzedaz_flat (
+    id SERIAL,
+    data_sprzedazy DATE NOT NULL,
+    kwota DECIMAL(10,2),
+    klient_id INT
+);
+
+
+INSERT INTO sprzedaz_flat (data_sprzedazy, kwota, klient_id)
+SELECT 
+    generate_series('2025-01-01'::date, '2025-12-31'::date, '32 seconds'::interval),
+    random() * 1000,
+    (random() * 10000)::int
+LIMIT 1000000;
+
+CREATE INDEX idx_flat_data ON sprzedaz_flat(data_sprzedazy);
+
+-- Tworzymy tabelę nadrzędną (logiczna struktura)
+CREATE TABLE sprzedaz_part (
+    id INT,
+    data_sprzedazy DATE NOT NULL,
+    kwota DECIMAL(10,2),
+    klient_id INT
+) PARTITION BY RANGE (data_sprzedazy);
+
+
+-- Tworzymy partycje fizyczne (np. kwartalne)
+CREATE TABLE sprzedaz_q1 PARTITION OF sprzedaz_part FOR VALUES FROM ('2025-01-01') TO ('2025-04-01');
+CREATE TABLE sprzedaz_q2 PARTITION OF sprzedaz_part FOR VALUES FROM ('2025-04-01') TO ('2025-07-01');
+CREATE TABLE sprzedaz_q3 PARTITION OF sprzedaz_part FOR VALUES FROM ('2025-07-01') TO ('2025-10-01');
+CREATE TABLE sprzedaz_q4 PARTITION OF sprzedaz_part FOR VALUES FROM ('2025-10-01') TO ('2026-01-01');
+CREATE TABLE sprzedaz_q4 PARTITION OF sprzedaz_part FOR VALUES FROM ('2025-10-01') TO ('2026-01-01');
+CREATE TABLE sprzedaz_part_default	PARTITION OF sprzedaz_part DEFAULT;
+
+CREATE INDEX idx_part_data ON sprzedaz_part(data_sprzedazy);
+
+INSERT INTO sprzedaz_part SELECT * FROM sprzedaz_flat;
+
+EXPLAIN ANALYZE 
+SELECT * FROM sprzedaz_flat 
+WHERE data_sprzedazy BETWEEN '2025-02-01' AND '2025-02-28';
+
+
+EXPLAIN ANALYZE 
+SELECT * FROM sprzedaz_part 
+WHERE data_sprzedazy BETWEEN '2025-02-01' AND '2025-02-28';
+
+
+update sprzedaz_flat set data_sprzedazy = '2026-09-06' where data_sprzedazy = '2025-10-01'
+
+
+
